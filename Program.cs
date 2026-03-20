@@ -1,12 +1,12 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddHttpClient("anthropic", client =>
+builder.Services.AddHttpClient("gemini", client =>
 {
-    client.BaseAddress = new Uri("https://api.anthropic.com");
-    client.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+    client.BaseAddress = new Uri("https://generativelanguage.googleapis.com");
     client.Timeout = TimeSpan.FromSeconds(60);
 });
 
@@ -17,26 +17,33 @@ app.UseStaticFiles();
 
 app.MapPost("/api/chat", async (ChatRequest request, IHttpClientFactory factory, IConfiguration config) =>
 {
-    var apiKey = config["Anthropic:ApiKey"];
+    var apiKey = config["Gemini:ApiKey"];
 
     if (string.IsNullOrWhiteSpace(apiKey))
         return Results.Problem(
-            detail: "A variável ANTHROPIC__APIKEY não está configurada no servidor.",
+            detail: "A variável Gemini__ApiKey não está configurada no servidor.",
             statusCode: 500);
 
     if (request.Messages is null || request.Messages.Count == 0)
         return Results.BadRequest(new { error = "messages é obrigatório." });
 
-    var client = factory.CreateClient("anthropic");
-    client.DefaultRequestHeaders.Remove("x-api-key");
-    client.DefaultRequestHeaders.Add("x-api-key", apiKey);
+    var client = factory.CreateClient("gemini");
+
+    // Gemini usa "user" e "model" (não "assistant")
+    var contents = request.Messages.Select(m => new
+    {
+        role  = m.Role == "assistant" ? "model" : "user",
+        parts = new[] { new { text = m.Content } }
+    });
 
     var body = new
     {
-        model      = "claude-3-5-sonnet-20241022",
-        max_tokens = 1024,
-        system     = request.System ?? string.Empty,
-        messages   = request.Messages
+        system_instruction = new
+        {
+            parts = new[] { new { text = request.System ?? string.Empty } }
+        },
+        contents,
+        generationConfig = new { maxOutputTokens = 1024, temperature = 0.7 }
     };
 
     var json    = JsonSerializer.Serialize(body, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
@@ -44,20 +51,25 @@ app.MapPost("/api/chat", async (ChatRequest request, IHttpClientFactory factory,
 
     try
     {
-        var response     = await client.PostAsync("/v1/messages", content);
+        var response     = await client.PostAsync($"/v1beta/models/gemini-1.5-flash:generateContent?key={apiKey}", content);
         var responseBody = await response.Content.ReadAsStringAsync();
 
-        return response.IsSuccessStatusCode
-            ? Results.Content(responseBody, "application/json")
-            : Results.Content(responseBody, "application/json", statusCode: (int)response.StatusCode);
+        if (!response.IsSuccessStatusCode)
+            return Results.Content(responseBody, "application/json", statusCode: (int)response.StatusCode);
+
+        // Normaliza resposta para o mesmo formato que o frontend espera
+        var gemini = JsonNode.Parse(responseBody);
+        var text   = gemini?["candidates"]?[0]?["content"]?["parts"]?[0]?["text"]?.GetValue<string>() ?? "...";
+
+        return Results.Ok(new { content = new[] { new { text } } });
     }
     catch (TaskCanceledException)
     {
-        return Results.Problem("Timeout ao aguardar resposta da Anthropic.", statusCode: 504);
+        return Results.Problem("Timeout ao aguardar resposta do Gemini.", statusCode: 504);
     }
     catch (HttpRequestException ex)
     {
-        return Results.Problem($"Erro de conexão com a Anthropic: {ex.Message}", statusCode: 502);
+        return Results.Problem($"Erro de conexão com o Gemini: {ex.Message}", statusCode: 502);
     }
 });
 
