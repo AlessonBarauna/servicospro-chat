@@ -4,9 +4,9 @@ using System.Text.Json.Nodes;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddHttpClient("gemini", client =>
+builder.Services.AddHttpClient("groq", client =>
 {
-    client.BaseAddress = new Uri("https://generativelanguage.googleapis.com");
+    client.BaseAddress = new Uri("https://api.groq.com");
     client.Timeout = TimeSpan.FromSeconds(60);
 });
 
@@ -17,33 +17,32 @@ app.UseStaticFiles();
 
 app.MapPost("/api/chat", async (ChatRequest request, IHttpClientFactory factory, IConfiguration config) =>
 {
-    var apiKey = config["Gemini:ApiKey"];
+    var apiKey = config["Groq:ApiKey"];
 
     if (string.IsNullOrWhiteSpace(apiKey))
         return Results.Problem(
-            detail: "A variável Gemini__ApiKey não está configurada no servidor.",
+            detail: "A variável Groq__ApiKey não está configurada no servidor.",
             statusCode: 500);
 
     if (request.Messages is null || request.Messages.Count == 0)
         return Results.BadRequest(new { error = "messages é obrigatório." });
 
-    var client = factory.CreateClient("gemini");
+    var client = factory.CreateClient("groq");
+    client.DefaultRequestHeaders.Remove("Authorization");
+    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
 
-    // Gemini usa "user" e "model" (não "assistant")
-    var contents = request.Messages.Select(m => new
+    // Groq usa formato OpenAI: system como primeira mensagem
+    var messages = new List<object>
     {
-        role  = m.Role == "assistant" ? "model" : "user",
-        parts = new[] { new { text = m.Content } }
-    });
+        new { role = "system", content = request.System ?? string.Empty }
+    };
+    messages.AddRange(request.Messages.Select(m => (object)new { role = m.Role, content = m.Content }));
 
     var body = new
     {
-        system_instruction = new
-        {
-            parts = new[] { new { text = request.System ?? string.Empty } }
-        },
-        contents,
-        generationConfig = new { maxOutputTokens = 1024, temperature = 0.7 }
+        model      = "llama-3.3-70b-versatile",
+        max_tokens = 1024,
+        messages
     };
 
     var json    = JsonSerializer.Serialize(body, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
@@ -51,25 +50,25 @@ app.MapPost("/api/chat", async (ChatRequest request, IHttpClientFactory factory,
 
     try
     {
-        var response     = await client.PostAsync($"/v1beta/models/gemini-1.5-flash:generateContent?key={apiKey}", content);
+        var response     = await client.PostAsync("/openai/v1/chat/completions", content);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
             return Results.Content(responseBody, "application/json", statusCode: (int)response.StatusCode);
 
-        // Normaliza resposta para o mesmo formato que o frontend espera
-        var gemini = JsonNode.Parse(responseBody);
-        var text   = gemini?["candidates"]?[0]?["content"]?["parts"]?[0]?["text"]?.GetValue<string>() ?? "...";
+        // Normaliza para o formato que o frontend espera: { content: [{ text }] }
+        var groq = JsonNode.Parse(responseBody);
+        var text = groq?["choices"]?[0]?["message"]?["content"]?.GetValue<string>() ?? "...";
 
         return Results.Ok(new { content = new[] { new { text } } });
     }
     catch (TaskCanceledException)
     {
-        return Results.Problem("Timeout ao aguardar resposta do Gemini.", statusCode: 504);
+        return Results.Problem("Timeout ao aguardar resposta do Groq.", statusCode: 504);
     }
     catch (HttpRequestException ex)
     {
-        return Results.Problem($"Erro de conexão com o Gemini: {ex.Message}", statusCode: 502);
+        return Results.Problem($"Erro de conexão com o Groq: {ex.Message}", statusCode: 502);
     }
 });
 
