@@ -512,10 +512,15 @@ REGRAS DE ATENDIMENTO:
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             system:   SYSTEM_PROMPT,
-            messages: history.map(m => ({
-              role:    m.role === 'bot' ? 'assistant' : m.role,
-              content: m.content,
-            })),
+            messages: (() => {
+              const msgs = history.map(m => ({
+                role:    m.role === 'bot' ? 'assistant' : m.role,
+                content: m.content,
+              }));
+              // Anthropic requires the first message to be from the user
+              const firstUser = msgs.findIndex(m => m.role === 'user');
+              return firstUser >= 0 ? msgs.slice(firstUser) : msgs;
+            })(),
           }),
         });
 
