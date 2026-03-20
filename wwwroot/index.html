@@ -528,7 +528,9 @@ REGRAS DE ATENDIMENTO:
 
         if (!response.ok) {
           const err = await response.json().catch(() => ({}));
-          appendMessage('bot', `❌ Erro ${response.status}: ${err?.detail ?? 'Tente novamente.'}`);
+          const msg = err?.error?.message ?? err?.detail ?? 'Tente novamente.';
+          appendMessage('bot', `❌ Erro ${response.status}: ${msg}`);
+          console.error('API error body:', err);
           return;
         }
 

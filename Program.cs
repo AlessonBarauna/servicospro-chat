@@ -33,7 +33,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IHttpClientFactory factory,
 
     var body = new
     {
-        model      = "claude-sonnet-4-20250514",
+        model      = "claude-3-5-sonnet-20241022",
         max_tokens = 1024,
         system     = request.System ?? string.Empty,
         messages   = request.Messages
